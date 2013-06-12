@@ -1,6 +1,7 @@
-use Test::More tests => 4;
-use Test::Exception;
+use Test::More tests => 8;
+use Test::Warn;
 
+use Math::Vector::Real;
 use Universe::Reynolds;
 
 my $u = Universe::Reynolds->new;
@@ -10,9 +11,9 @@ isa_ok( $u, 'Universe::Reynolds' );
 can_ok( $u, qw(step next_collision) );
 
 $u = Universe::Reynolds->new( grain_radius => 1, radius => 1 );
-$u->fill_random(1);
+$u->fill_random(.90);
 
-is( $u->positions->size, 1 );
+is( $u->positions->size, 0 );
 
 $u = Universe::Reynolds->new( grain_radius => 1, radius => 2 );
 eval {
@@ -20,11 +21,19 @@ eval {
 };
 
 is( $u->positions->size, 2 );
-__END__
+
 $u = Universe::Reynolds->new( grain_radius => 1, radius => 2 );
-eval{ $u->insert([ [0,0,1], [0,0,0] ], [ [0,0,-1.5], [0,0,0] ]) };
+warning_like {
+    $u->insert( [ [ 0, 0, 1 ], [ 0, 0, 0 ] ], [ [ 0, 0, -1.5 ], [ 0, 0, 0 ] ] );
+}
+qr[out of bounds];
 
-like( $@, qr[out of bounds]);
+is( $u->positions->size, 1 );
 
-is( $u->positions->size, 1);
-
+$u = Universe::Reynolds->new( grain_radius => .01, radius => 1 );
+ok( $u->fill_random(.005) );
+{
+    my $x = $u;
+    $x->step;
+    is( $u->positions, $x->positions );
+}
