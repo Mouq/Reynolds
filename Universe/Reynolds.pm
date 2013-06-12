@@ -13,12 +13,16 @@ use Carp;
 use Math::BigInt lib => 'GMP';
 
 use Math::Vector::Real;
-use Math::Vector::Real::kdTree;
 use Math::Trig qw(pi);
 
 use Math::Vector::Real::Random;
 
 use Data::Dumper;    ##
+
+# Modified kdTree implementation
+# (In same dir as Universe/)
+use lib ".";
+use Math::Vector::Real::kdTree;
 
 has grain_radius => ( is => 'ro', isa => 'Num', default => 2.767e-18 );
 has radius       => ( is => 'rw', isa => 'Num', default => 1e-17 );
@@ -144,7 +148,7 @@ sub next_collision_partial {
         for ( 1 .. 12 ) {
             push @nearest,
               $self->positions->find_nearest_neighbor( $self->positions->at($i),
-                undef, @nearest );
+                undef, \@nearest );
         }
         for (@nearest) {
             next
