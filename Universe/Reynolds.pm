@@ -76,12 +76,14 @@ sub fill_random {
 
 sub step {
     my $self    = shift;
-    my $step_by = shift;
+    my $step_by = shift or croak "Bad time interval supplied";
     my $next_in = $self->next_collision_in;
     if ( $step_by < $next_in ) {
-
-        # move each
-        $self->next_collision_in( +$step_by );
+        for ($#{$self->velocities}) {
+            next unless $self->velocities->[$_];
+            $self->positions->move($_, $self->positions->at($_) + $self->velocities->[$_] * $step_by);
+        }
+        $self->next_collision_in( -$step_by ); # Next collision happens in $step_by less time
     }
     else {
         $self->collide;
@@ -108,11 +110,11 @@ sub next_collision_in {
     state $next_in;
     my $move_by = shift;
     if ( defined $move_by ) {
-        $next_in -= $move_by;
+        $next_in += $move_by;
     }
     else {
-        $next_in =
-          $self->lazy ? $self->next_collision_partial : $self->next_collision;
+        $next_in = 1;
+        #  $self->lazy ? $self->next_collision_partial : $self->next_collision;
     }
 }
 
@@ -183,7 +185,7 @@ sub touches_wall_in {
 
 sub _touch_in {
     my ( $p, $v, $r ) = @_;
-    my @t = map { $_ * ( $r / abs($v) ) + ( $p / $v ) } 1, -1;
+    my @t = map { $_ * ( ($r // 0) / abs($v) ) + ( $p / $v ) } 1, -1;
     $t[0] > 0
       && $t[0] >= $t[1] ? $t[0] : $t[1] > 0 ? $t[1] : Math::BitInt->binf;
 }

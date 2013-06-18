@@ -30,10 +30,10 @@ qr[out of bounds];
 
 is( $u->positions->size, 1 );
 
-$u = Universe::Reynolds->new( grain_radius => .01, radius => 1 );
-ok( $u->fill_random(.005) );
+$u = Universe::Reynolds->new( grain_radius => .04, radius => 1 );
+ok( $u->fill_random(.25) );
 {
     my $x = $u;
-    $x->step;
+    $x->step(.5);
     is( $u->positions, $x->positions );
 }
