@@ -24,8 +24,8 @@ use Data::Dumper;    ##
 use lib ".";
 use Math::Vector::Real::kdTree;
 
-has grain_radius => ( is => 'ro', isa => 'Num', default => 2.767e-18 );
-has radius       => ( is => 'rw', isa => 'Num', default => 1e-17 );
+has grain_radius => ( is => 'ro', default => 2.767e-18 );
+has radius       => ( is => 'rw', default => 1e-17 );
 has positions  => ( is => 'rw', default => sub { _positions_reset() } );
 has velocities => ( is => 'rw', default => sub { [] } );
 has lazy => ( is => 'rw', isa => 'Bool', default => 1 );
@@ -77,9 +77,9 @@ sub insert {
     for (@_) {
         my ( $p, $v ) = @$_;
         map { bless $_, 'Math::Vector::Real' } $p, $v;
-        carp "Grain attempted to be placed out of bounds" and next
+        croak "Grain ($p) attempted to be placed out of bounds by from line ".(caller)[2]
           if not $self->in_container($p);
-        carp "Grain attempted to be placed intersecting another grain" and next
+        croak "Grain ($p) attempted to be placed intersecting another grain from line ".(caller)[2]
           if $self->intersection_at($p);
         my $i = $self->positions->insert($p);
         $self->velocities->[$i] = $v // V( 0, 0, 0 );
@@ -210,23 +210,32 @@ sub fill_random_path {
     
     # Find where we _can't_ put a sphere
     my $angle_xz = rand(2*pi);
-    my @nearby     = $self->surrounding_spheres($i);
-    my $c0 = $self->positions->at($i);
+    my @nearby   = $self->surrounding_spheres($i);
+    my $c0       = $self->positions->at($i);
     my @kiss_points;
     for my $s_i (@nearby) {
-        my $c1 = $self->positions->at($i);
-        next if abs($c1-$c0) > 4*$self->radius;
-        my $r1 = sqrt($self->radius**2 + ($c0->[0]+$c1->[0])*(cos($angle_xz) - $c0->[0] - $c1->[0])
-                                       + ($c0->[1]+$c1->[1])*(sin($angle_xz) - $c0->[1] - $c1->[1]));
+        my $c1 = $self->positions->at($s_i);
+        next if abs($c1-$c0) > 4*$self->grain_radius;
+        my $r1 = sqrt($self->grain_radius**2 + ($c0->[0]+$c1->[0])*(cos($angle_xz) - $c0->[0] - $c1->[0])
+                                             + ($c0->[1]+$c1->[1])*(sin($angle_xz) - $c0->[1] - $c1->[1]));
         push @kiss_points, [
             circle_circle_intersection(
                 V(0,0), # Somewhat dubious ATM
-                $self->radius,
+                $self->grain_radius,
                 V( ($c0->[0]+$c1->[0])*cos($angle_xz)
                   +($c0->[1]+$c1->[1])*sin($angle_xz),
-                $c1->[2])
+                  $c1->[2]),
+                $r1
             )];
     }
+
+    my @border_case = circle_circle_intersection(
+        V(0,0),
+        $self->grain_radius,
+        V( $c0->[0]*cos($angle_xz) + $c0->[1]*sin($angle_xz), 0 ),
+        $self->radius
+    );
+
     my @range = (0, 2*pi); # Start, stop, start, ...
     for (@kiss_points) {
         # Transform into angle
@@ -235,7 +244,7 @@ sub fill_random_path {
         next unless $ang_begin - $ang_end;
         ($ang_begin, $ang_end) = ($ang_end, $ang_begin) if $ang_end + $ang_begin > pi;
         my ($a, $b);
-        for (0 .. $#range-1) { # Perhaps not the best way
+        for (0 .. $#range-1) { # The following should be a general function
             my ($p, $n) = @range[$_,$_+1];
             $a = $_ if !defined($a) && $p <= $ang_begin && $ang_begin <= $n;
             $b = $_ if !defined($b) && $p <= $ang_end   && $ang_end   <= $n;
@@ -249,6 +258,24 @@ sub fill_random_path {
             @range = ( splice( @range, 0, $a ), ($a % 2 ? () : $ang_begin), ($b % 2 ? () : $ang_end), splice( @range, $b+1 ) );
         }
     }
+
+    { 
+        my ($a, $b);
+        for (0 .. $#range-1) {
+            my ($p, $n) = @range[$_,$_+1];
+            $a = $_ if !defined($a) && $p <= $border_case[0] && $border_case[0] <= $n;
+            $b = $_ if !defined($b) && $p <= $border_case[1] && $border_case[1] <= $n;
+            last if defined $a and defined $b;
+        }
+        if ($a==$b and !($a % 2)) {
+            @range = ( splice( @range, 0, $a ), $border_case[0], $border_case[1], splice( @range, $a+1) );
+        } elsif ($a > $b) {
+            @range = ( ($b % 2 ? () : $border_case[1]) , splice( @range, $b+1, $a ), ($a % 2 ? () : $border_case[0]) );
+        } else {
+            @range = ( splice( @range, 0, $a ), ($a % 2 ? () : $border_case[0]), ($b % 2 ? () : $border_case[1]), splice( @range, $b+1 ) );
+        }
+    }
+
     croak "Bug" if (@range % 2);
     my $total;
     for (0 .. int $#range/2) {
@@ -259,7 +286,7 @@ sub fill_random_path {
         last if $angle_y < $range[$_+1];
         $angle_y += $range[$_+2] - $range[$_+1] if $angle_y >= $range[$_+1];
     }
-    fill_random_path($percent_fill, V(spherical_to_cartesian(2*$self->radius, $angle_xz, $angle_y)));
+    fill_random_path($percent_fill, V(spherical_to_cartesian(2*$self->grain_radius, $angle_xz, $angle_y)));
     return "triumphant!";
 }
 
