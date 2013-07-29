@@ -1,5 +1,5 @@
 package Universe::Reynolds;
-our $VERSION = 0.01;
+our $VERSION = 0.02;
 
 use v5.16;
 use strict;
@@ -7,31 +7,79 @@ use warnings;
 use autodie;
 $|++;
 
+=head1 NAME
+
+Universe::Reynolds
+
+=head1 SYNOPSIS
+
+    use Universe::Reynolds;
+    
+    my $u = Universe::Reynolds->new(
+        grain_radius => 1,
+        radius       => 1000
+    );
+    
+    $u->fill_random;
+    # fill_dense is recommended when implemented
+
+    $u->step(1) while 1;
+
+=head1 DESCRIPTION
+
+A module to simulate a ton of densly packed spheres in a container
+(currently implemented as a large sphere itself), as the late Osborne
+Reynolds postulated our universe to be. There may, in the future, be
+methods to also analyze the density, or really the inverse density, of
+the system.
+
+=cut
+
+use List::Util qw(reduce min);
 use Moose;
 use Carp;
 
 use Math::BigInt;# lib => 'GMP';
 
 use Math::Vector::Real;
-use Math::Trig qw(pi spherical_to_cartesian);
-
+use Math::Vector::Real::kdTree;
 use Math::Vector::Real::Random;
 
-use Data::Dumper;    ##
+use Math::Trig qw(pi spherical_to_cartesian);
 
-# Modified kdTree implementation
-# (In same dir as Universe/)
-use lib ".";
-use Math::Vector::Real::kdTree;
+use Data::Dumper;
 
-has grain_radius => ( is => 'ro', default => 2.767e-18 );
-has radius       => ( is => 'rw', default => 1e-17 );
-has positions  => ( is => 'rw', default => sub { _positions_reset() } );
-has velocities => ( is => 'rw', default => sub { [] } );
-has lazy => ( is => 'rw', isa => 'Bool', default => 1 );
+=head1 CONSTRUCTOR
+
+=over 4
+
+=item new( [ARGS] )
+
+Configure any of the key-value pairs:
+    grain_radius
+    radius
+    lazy # Bool, trades sureness for speed
+
+=back
+
+=cut
+
+has grain_radius => ( is => 'ro', default => sub{2.767e-18} );
+has radius       => ( is => 'rw', default => sub{1e-17} );
+has positions    => ( is => 'rw', default => sub { _positions_reset() } );
+has velocities   => ( is => 'rw', default => sub { [] } );
+has acceleration => ( is => 'rw', default => sub { [] } );
+has lazy => ( is => 'rw', isa => 'Bool', default => sub{1} );
+has time => ( is => 'rw', default => sub{0});
+has accuracy => ( is => 'rw', default => 1e-7);
+
+=head1 METHODS
+
+=over 4
+
+=cut
 
 sub in_container {
-
     my $self      = shift;
     my $grain_pos = shift;
 
@@ -46,118 +94,197 @@ sub intersection_at {
     my $p    = shift;
     carp "Undefined point" and return unless defined($p);
     my @n = $self->positions->find_nearest_neighbor($p) or return 0;
-    $n[1] < 2 * $self->grain_radius;
-
+    #return $n[1] < 2 * $self->grain_radius
+    #say "Testing intersection: ", abs( $self->positions->at($n[0])-$p ), " < ", 2 * $self->grain_radius, " is ", (abs( $self->positions->at($n[0])-$p ) < 2 * $self->grain_radius)?'true':'false';
+    return 0 if (abs(2 * $self->grain_radius - $n[1]) < $self->accuracy);
+    return ($n[1] < 2 * $self->grain_radius);
 }
 
 sub _positions_reset {
     Math::Vector::Real::kdTree->new(@_);
 }
 
-sub step {
-    my $self    = shift;
-    my $step_by = shift or croak "Bad time interval supplied";
-    my $next_in = $self->next_collision_in;
-    if ( $step_by < $next_in ) {
-        for ($#{$self->velocities}) {
-            next unless $self->velocities->[$_];
-            $self->positions->move($_, $self->positions->at($_) + $self->velocities->[$_] * $step_by);
-        }
-        $self->next_collision_in( -$step_by ); # Next collision happens in $step_by less time
-    }
-    else {
-        $self->collide;
-        $self->step( $step_by - $next_in );
-    }
-}
+=item insert( [ pos, vel, acc  ], ... )
+
+Try to place new sphere(s) into the universe at position = [x,y,z],
+velocity = [x,y,z], and acceleration = [x,y,z], all defaulting to
+[0,0,0]
+
+=cut
 
 sub insert {
     my $self = shift;
+    my $no_warnings = 1;#pop if !ref($_[$#_]);
     my @i;
-    for (@_) {
-        my ( $p, $v ) = @$_;
-        map { bless $_, 'Math::Vector::Real' } $p, $v;
-        croak "Grain ($p) attempted to be placed out of bounds by from line ".(caller)[2]
+    for my $new (@_) {
+        my ($p, $v, $a);
+        map {$_ = (bless( (shift(@$new) // [0,0,0]), 'Math::Vector::Real')) } $p, $v, $a;
+        #say "Inserting: $p, $v, $a";
+        ($no_warnings || carp("Grain ($p) attempted to be placed out of bounds by from line ".(caller)[2]) ) and next
           if not $self->in_container($p);
-        croak "Grain ($p) attempted to be placed intersecting another grain from line ".(caller)[2]
+        ($no_warnings || carp("Grain ($p) attempted to be placed intersecting another grain from line ".(caller)[2]) ) and next
           if $self->intersection_at($p);
         my $i = $self->positions->insert($p);
         $self->velocities->[$i] = $v // V( 0, 0, 0 );
+        say('',($p=~tr/{}/[]/r),",");
+        #say "Given index: $i";
         push @i, $i;
     }
     return @i;
 }
 
-sub next_collision_in {
-    my $self = shift;
-    state $next_in;
-    my $move_by = shift;
-    if ( defined $move_by ) {
-        $next_in += $move_by;
+=item step( $step_by )
+
+Move the simulation forward by time interval $step_by
+
+=cut
+
+sub step {
+    my $self    = shift;
+    my $step_by = shift // croak "No time interval supplied";
+    return 1 if $step_by==0;
+    my $next_in = $self->next_collision_in;
+    if (not defined $next_in) {
+        $self->lazy ? $self->next_collision_partial : $self->next_collision;
+        $next_in = $self->next_collision_in;
+    }
+    say "Next in: $next_in";
+    if ( $step_by < $next_in ) {
+        $self->move( $step_by );
+        $self->next_collision_in( -$step_by ); # Next collision happens in $step_by less time
+        $self->time( $self->time + $step_by );
     }
     else {
-        $next_in = 1;
-        #  $self->lazy ? $self->next_collision_partial : $self->next_collision;
+        $self->collide;
+        $self->lazy ? $self->next_collision_partial : $self->next_collision;
+        $self->time( $self->time + $next_in );
+        $self->step( $step_by - $next_in );
     }
 }
 
-sub next_collision {
-
-    # O(n^2)
-    my $self     = shift;
-    my @n_c      = ( Math::BigInt->binf, undef, undef );
-    my @to_check = 0 .. $self->positions->size;
-    while (@to_check) {
-        my $i = pop @to_check;
-        for (@to_check) {
-            next
-              unless abs( $self->velocities->[$i] - $self->velocities->[$_] );
-            my $t = $self->grains_touch_in( $i, $_ );
-            @n_c = ( $t, $i, $_ ) if $t < $n_c[0];
-            push @n_c, ( $t, $i, $_ ) if $t == $n_c[0];
-        }
-        my $t = $self->touches_wall_in($i);
-        @n_c = ( $t, $i, $_ ) if $t < $n_c[0];
-        push @n_c, ( $t, $i, undef ) if $t == $n_c[0];
-    }
-    return \@n_c;
-}
-
-sub next_collision_partial {
-
-    # O(n)
+sub move {
     my $self = shift;
-    my @n_c = ( Math::BigInt->binf, undef, undef );
-    for my $i ( 0 .. $self->positions->size ) {
-        my @nearest = $self->surrounding_spheres($i);
-        for (@nearest) {
-            next
-              unless abs( $self->velocities->[$i] - $self->velocities->[$_] );
-            my $t = $self->grains_touch_in( $i, $_ );
-            @n_c = ( $t, $i, $_ ) if $t < $n_c[0];
-            push @n_c, ( $t, $i, $_ ) if $t == $n_c[0];
-        }
-        next unless abs( $self->velocities->[$i] );
-        my $t = $self->touches_wall_in($i);
-        @n_c = ( $t, $i, $_ ) if $t < $n_c[0];
-        push @n_c, ( $t, $i, undef ) if $t == $n_c[0];
+    my $step_by = shift || return 1;
+    my $i = 0;
+    while ($i < @{$self->velocities}) {
+        next unless $self->velocities->[$i];
+        $self->positions->move($i, $self->positions->at($i) + $self->velocities->[$i] * $step_by);
+        $i++
     }
-    return \@n_c;
+}
+
+{   # Collision scope
+
+    # Array of arrays of the soonest (simultaneous) collisions
+    state @n_c;
+    # that all happen at time:
+    state $t;
+
+    sub next_collision_in {
+        # Accessor, basically
+        return $t+=$_[1] if defined $_[1];
+        return $t;
+    }
+
+    sub next_collision {
+        # O(n^2)
+        my $self     = shift;
+        my $i = 0;
+        while ($i < $self->positions->size) {
+            my $j = $i; # Triangular counting
+            while ($j < $self->positions->size) {
+                next unless abs( $self->velocities->[$i] - $self->velocities->[$_] );
+                my $t_new = $self->grains_touch_in( $i, $_ );
+                if ( (not defined $t) || $t_new < $t ) {
+                    $t = $t_new;
+                    @n_c = [$i, $j];
+                } elsif ( $t_new == $t ) {
+                    push @n_c, [$i, $j];
+                }
+                $j++
+            }
+            next unless abs( $self->velocities->[$i] );
+            my $t_new = $self->touches_wall_in($i);
+            if ( (not defined $t) || $t_new < $t ) {
+                $t = $t_new;
+                @n_c = [$i, undef];
+            } elsif ( $t_new == $t ) {
+                push @n_c, [$i, undef];
+            }
+            $i++
+        }
+        return \@n_c;
+    }
+
+    sub next_collision_partial {
+        # O(n)
+        my $self = shift;
+        my $i = 0;
+        while ($i < $self->positions->size) {
+            my @nearest = $self->surrounding_spheres($i);
+            for (@nearest) {
+                next unless abs( $self->velocities->[$i] - $self->velocities->[$_] );
+                my $t_new = $self->grains_touch_in( $i, $_ );
+                if ( (not defined $t) || $t_new < $t ) {
+                    $t = $t_new;
+                    @n_c = [$i, $_];
+                } elsif ( $t_new == $t ) {
+                    push @n_c, [$i, $_];
+                }
+                ($t = $t_new) and (@n_c = [$i, $_] ) if (not defined $t) || $t_new < $t;
+                push @n_c, [$i, $_] if $t_new == $t;
+            }
+            next unless abs( $self->velocities->[$i] );
+            my $t_new = $self->touches_wall_in($i);
+            if ( (not defined $t) || $t_new < $t ) {
+                $t = $t_new;
+                @n_c = [$i, undef];
+            } elsif ( $t_new == $t ) {
+                push @n_c, [$i, undef];
+            }
+            $i++;
+        }
+        return \@n_c;
+    }
+
+    sub collide {
+        my $self = shift;
+        $self->move($t);
+        my(@wall, @rest);
+        map {defined($_->[1]) ? push @rest, $_ : push @wall, $_->[0]} @n_c;
+        for (@wall) {
+            my $v = $self->velocities->[$_];
+            my $p = $self->positions->at($_);
+            # I think this could be reduced
+            $self->velocities->[$_] = $v - 2*($v*$p)/abs($p)*($p->versor);
+        }
+        for (@rest) {
+            ...
+
+        }
+    }
+
 }
 
 sub surrounding_spheres {
     my $self = shift;
     my $i = shift;
-    my @nearest;
+    my $d = shift; #max distance
+    my %nearest;
+    $nearest{$i} = (@_ ? shift : 1); #don't count same point as input (default true)
     for ( 1 .. 12 ) {
-        push @nearest,
-          $self->positions->find_nearest_neighbor( $self->positions->at($i),
-          undef, \@nearest );
+        my $k =
+        $self->positions->find_nearest_neighbor(
+            $self->positions->at($i),
+            $d,
+            \%nearest
+        );
+        $nearest{$k} = 1 if defined $k
     }
-    return @nearest;
+    return keys %nearest;
 }
 
-sub circle_circle_intersection {
+sub circle_circle_intersection { ## rename to circle_intersection() 
     my ($center1, $radius1, $center2, $radius2) = @_;
     # centers assumed to be V()s
     my $d = abs($center1-$center2);
@@ -170,7 +297,33 @@ sub circle_circle_intersection {
     my $mid = $center1 + $a * ( $center2 - $center1 ) / $d;
     return map {V( $center1->[0] + $_*($center2->[1] - $center1->[1])/$d,
                    $center1->[1] - $_*($center2->[0] - $center1->[0])/$d )} $h, -$h;
-    # Blatently stolen: http://stackoverflow.com/a/3349134
+    # Blatently stolen from: http://stackoverflow.com/a/3349134
+}
+
+sub sphere_intersection { ## Makes some assumptions, *s\h\o\u\l\d\* w\o\r\k\...
+    ## Nope, _terrible_ assumptions. Need to rework from scratch.
+    ## It'll be easier just to
+    die;
+    ## for now.
+
+    my $self = shift;
+    my @centers = @{$_[0]{centers}};
+    #say "CENTERS\t@centers";
+    my $radius  = $_[0]{radius}; # Assumption for now
+    my $avg     = (reduce {$a+$b} @centers)/3;
+    #my $cross   = (V(map {Math::BigFloat->new($_)} @{$avg-$centers[0]}))x(V(map {Math::BigFloat->new($_)} @{$avg-$centers[1]}));
+    my $cross   = ($avg-$centers[0])x($avg-$centers[1]);
+    #say "AVG $avg\tCROSS\t$cross";
+    return unless abs($cross);
+    (0 <= ($radius**2-(abs($avg-$_))**2) || return) for @centers;
+    my @x = map {
+        $_ * sqrt( ($radius**2-(abs($avg-$centers[0]))**2) / (abs( $cross ))**2 )
+    } +1, -1;
+    @x = map { my $x = $_;
+        V(map {$_*$x} @$cross) + $avg
+    } @x;
+    ( ($x[0]->dist($_) - 2*$radius < $self->accuracy && $x[1]->dist($_) - 2*$radius < $self->accuracy) || return) for @centers;
+    return @x;
 }
 
 sub grains_touch_in {
@@ -191,33 +344,91 @@ sub touches_wall_in {
 
 sub _touch_in {
     my ( $p, $v, $r ) = @_;
-    my @t = map { $_ * ( ($r // 0) / abs($v) ) + ( $p / $v ) } 1, -1;
-    $t[0] > 0
-      && $t[0] >= $t[1] ? $t[0] : $t[1] > 0 ? $t[1] : Math::BitInt->binf;
+    return Math::BigInt->binf if !abs($v);
+    my @t = map { $_ * ( ($r // 0) / abs($v) ) + ( $v * $p / ($v*$v) ) } 1, -1;
+    say "Touch in: @t";
+    return min grep {$_ > 0} @t
 }
 
 sub volume { 4 / 3 * pi * ( shift()**3 ) }
 
 ## Fill methods
 
-sub fill_random_path {
+=item fill_random( $percent_filled )
+
+Puts spheres where there aren't spheres until the universe is filled
+as close as possible to the requested $percent_filled
+
+=cut
+
+sub fill_dense { #_simple ## Sloppy
+    my $self = shift;
+    my %checked = %{+shift//{}};
+    my %done = %{+shift//{}};
+    carp "Too few (".$self->positions->size.") spheres to start!" and return if $self->positions->size < 3;
+    carp "Out of space" and return if volume( $self->grain_radius ) * ( $self->positions->size + 1 ) >
+                                      volume( $self->radius );
+    return if $self->positions->size ==  keys %done ;
+    # Doesn't try to put anything in that isn't perfectly 'snug'
+    for my $i_n (grep {!$done{$_}} 0 .. $self->positions->size-1) {
+        # Don't bother checking lower indicies
+        my $i = $self->positions->at($i_n);
+        my %checked_old = %checked;
+        my @nearest = sort(($self->positions->size < 1000) ? grep {abs($self->positions->at($_)-$i)<=4*$self->grain_radius
+                              && abs($self->positions->at($_)-$i)}  $self->positions->ordered_by_proximity : $self->surrounding_spheres($i_n));
+        #say "Possibilities: ", join ", ", @nearest;
+        for my $j_n (@nearest) {
+            my $j = $self->positions->at($j_n);
+            for my $k_n (grep {$_ > $j_n} @nearest) {
+                my $k = $self->positions->at($k_n);
+                next if $checked{join "", sort $i_n, $j_n, $k_n};
+                my @int = grep {defined} $self->sphere_intersection({
+                    centers => [($i, $j, $k)],
+                    radius  => 2*$self->grain_radius
+                });
+                #say "Trying: $i_n, $j_n, $k_n -- ", join " - ", @int;
+                $self->insert(map {[$_]} @int) if @int;
+                $checked{join "", sort $i_n, $j_n, $k_n} = 1;
+            }
+        }
+        $done{$i_n} = 1 if (%checked_old ~~ %checked);
+    }
+    $self->fill_dense(\%checked,\%done)
+}
+
+sub fill_random {
+    # This is a non-trivial caclulation
+    my $self = shift;
+    my $percent_fill = shift;
+    my $ang1 = rand(2*pi);
+    my $ang2 = rand(2*pi);
+    for (0 .. $self->positions->size-1) {
+        #my $p = $i
+        ...
+    }
+}
+
+sub fill_random_path { #Broken :(
     my $self = shift;
     my $percent_fill = shift;
     my $start = shift // V(0,0,0);
-    return if ( volume( $self->grain_radius ) * ( $self->positions->size + 1 ) <=
-                volume( $self->radius ) * $percent_fill );
-    my $i = $self->insert( [ $start, V( 0, 0, 0 ) ] );
+    my($i) = $self->insert( [ $start, V( 0, 0, 0 ) ] );
     
     # Find where we _can't_ put a sphere
     my $angle_xz = rand(2*pi);
-    my @nearby   = $self->surrounding_spheres($i);
     my $c0       = $self->positions->at($i);
+    my @nearby   = $self->surrounding_spheres($i);
     my @kiss_points;
+    say "@nearby";
     for my $s_i (@nearby) {
         my $c1 = $self->positions->at($s_i);
+        next if ($c0 == $c1);
         next if abs($c1-$c0) > 4*$self->grain_radius;
-        my $r1 = sqrt($self->grain_radius**2 + ($c0->[0]+$c1->[0])*(cos($angle_xz) - $c0->[0] - $c1->[0])
-                                             + ($c0->[1]+$c1->[1])*(sin($angle_xz) - $c0->[1] - $c1->[1]));
+        my $r1sq = $self->grain_radius**2
+                 + ($c0->[0]+$c1->[0])*(cos($angle_xz) - $c0->[0] - $c1->[0])
+                 + ($c0->[1]+$c1->[1])*(sin($angle_xz) - $c0->[1] - $c1->[1]);
+        next if $r1sq<0;
+        my $r1 = sqrt($r1sq);
         push @kiss_points, [
             circle_circle_intersection(
                 V(0,0), # Somewhat dubious ATM
@@ -240,6 +451,7 @@ sub fill_random_path {
     for (@kiss_points) {
         # Transform into angle
         # Add to @range
+        say "::@$_";
         my ($ang_begin, $ang_end) = map { atan2($_->[0], $_->[1]) } $_->[0], $_->[1];
         next unless $ang_begin - $ang_end;
         ($ang_begin, $ang_end) = ($ang_end, $ang_begin) if $ang_end + $ang_begin > pi;
@@ -268,25 +480,48 @@ sub fill_random_path {
             last if defined $a and defined $b;
         }
         if ($a==$b and !($a % 2)) {
-            @range = ( splice( @range, 0, $a ), $border_case[0], $border_case[1], splice( @range, $a+1) );
+            @range = (
+                splice( @range, 0, $a ),
+                $border_case[0],
+                $border_case[1],
+                splice( @range, $a+1)
+            );
         } elsif ($a > $b) {
-            @range = ( ($b % 2 ? () : $border_case[1]) , splice( @range, $b+1, $a ), ($a % 2 ? () : $border_case[0]) );
+            @range = (
+                ($b % 2 ? () : $border_case[1]),
+                splice( @range, $b+1, $a ),
+                ($a % 2 ? () : $border_case[0])
+            );
         } else {
-            @range = ( splice( @range, 0, $a ), ($a % 2 ? () : $border_case[0]), ($b % 2 ? () : $border_case[1]), splice( @range, $b+1 ) );
+            @range = (
+                splice( @range, 0, $a ),
+                ($a % 2 ? () : $border_case[0]),
+                ($b % 2 ? () : $border_case[1]),
+                splice( @range, $b+1 )
+            );
         }
     }
-
-    croak "Bug" if (@range % 2);
     my $total;
     for (0 .. int $#range/2) {
         $total += $range[$_+1] -$range[$_];
     }
+    return if !$total;
     my $angle_y = rand($total);
     for (0 .. int $#range/2) {
         last if $angle_y < $range[$_+1];
         $angle_y += $range[$_+2] - $range[$_+1] if $angle_y >= $range[$_+1];
     }
-    fill_random_path($percent_fill, V(spherical_to_cartesian(2*$self->grain_radius, $angle_xz, $angle_y)));
+    
+    while ( volume( $self->grain_radius ) * ( $self->positions->size + 1 ) <=
+            volume( $self->radius ) * $percent_fill )
+    {
+        my $coords = V(spherical_to_cartesian(2*$self->grain_radius, $angle_xz, $angle_y));
+        say "(($coords))";
+        $self->fill_random_path(
+            $percent_fill,
+            $coords
+        );
+    }
     return "triumphant!";
 }
 
@@ -309,6 +544,10 @@ sub fill_random_stupid {
     }
     $self;
 }
+
+=back
+
+=cut
 
 1;
 
