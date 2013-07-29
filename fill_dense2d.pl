@@ -18,7 +18,7 @@ my $u = Universe::Reynolds::2D->new(
     grain_radius    => 1.0
 );  # number of spheres ~ radius**2 / grain_radius**2
 {
-    my $num = 7;
+    my $num = 4;
     my $rad = $u->grain_radius/sin(pi/$num);
     my @pos = map {V($rad * cos($_), $rad * sin($_))} map {$_ * 2*pi/$num} 0 .. $num-1;
     #say "$rad ", join " and ", @pos;
@@ -26,12 +26,12 @@ my $u = Universe::Reynolds::2D->new(
     $u->insert(map {[$_]} @pos);
     #say "__", $u->positions->size;
 }{
-    my $num = 9;
+    my $num = 1;
     my $rad = $u->grain_radius/sin(pi/$num);
     my @pos = map {V($rad * cos($_), $rad * sin($_))+V(40,20)} map {$_ * 2*pi/$num} 0 .. $num-1;
     #say "$rad ", join " and ", @pos;
     #say 2*$u->grain_radius - abs($pos[0]-$pos[1]);
-    $u->insert(map {[$_]} @pos);
+#    $u->insert(map {[$_]} @pos);
     #say "__", $u->positions->size;
 }
 

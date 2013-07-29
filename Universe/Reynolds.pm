@@ -351,6 +351,7 @@ sub _touch_in {
 }
 
 sub volume { 4 / 3 * pi * ( shift()**3 ) }
+sub area   { pi*$_[0]**2 }
 
 ## Fill methods
 
