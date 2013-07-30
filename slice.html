@@ -18,9 +18,15 @@
         </tr><tr>
             <td class='label'>#: <div class='s'>0</div></td>
             <td><input type='range' class='s' val='1' min='1' max='1' /></td>
-        </tr><tr>
-            <td class='label'>Dev? </td>
-            <td><input type='checkbox' class='dev' /></td>
+        </tr><tr id='options'>
+            <td class='label'>Options</td>
+            <td>
+                Circles? <input type='checkbox' class='circles' checked='checked'/>&nbsp;&nbsp;
+                Lines? <input type='checkbox' class='lines' checked='checked' />&nbsp;&nbsp;
+                2x spheres? <input type='checkbox' class='2x' />&nbsp;&nbsp;
+                Numbered? <input type='checkbox' class='numbered' />&nbsp;&nbsp;
+                <!-- JSON URL: <input type='text' class='json_url' />&nbsp;&nbsp;-->
+            </td>
         </tr>
     </table>
     <div id='pos'></div>

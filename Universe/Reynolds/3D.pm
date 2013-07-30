@@ -69,7 +69,7 @@ sub insert {
         my $i = $self->positions->insert($p);
         $self->velocities->[$i] = $v // V( 0, 0, 0 );
         #say('',($p=~tr/{}/[]/r),",");
-        #say "Given index: $i";
+        say STDERR "Given index: $i";
         push @i, $i;
     }
     return @i;
@@ -80,41 +80,48 @@ sub fill_dense {$|++;
     my %checked = %{+shift//{}};
     my %done = %{+shift//{}};
     carp "Too few (".$self->positions->size.") spheres to start!" and return if $self->positions->size < 3;
-    return if $self->positions->size ==  keys %done ;
-    # Doesn't try to put anything in that isn't perfectly 'snug'
-    for my $i_n (grep {!$done{$_}} 0 .. $self->positions->size-1) {
-        carp "Out of space" and return
-            if volume( $self->grain_radius ) * ( $self->positions->size + 1 ) > volume( $self->radius );
-        # Don't bother checking lower indicies
-        my $i = $self->positions->at($i_n);
-        my $changed = 0;
-        my @nearest;
-        my $next_nearest = sub {$self->positions->find_nearest_neighbor(
-            $self->positions->at($i_n),
-            4*$self->grain_radius,
-            {$i_n=>1, map {($_=>1)} @nearest}
-        )};
-        #say "Possibilities: ", join ", ", @nearest;
-        while ((my $j_n = $next_nearest->())) {
-            my $j = $self->positions->at($j_n);
-            for my $k_n (@nearest){
-                my $k = $self->positions->at($k_n);
-                next if $checked{join "", sort $i_n, $j_n, $k_n};
-                my @int = grep {defined} $self->sphere_intersection({
-                    centers => [$i, $j, $k],
-                    radius  => 2*$self->grain_radius
-                });
-                #say "Trying: $i_n, $j_n, $k_n -- ", join " - ", @int;
-                $changed += $self->insert(map {[$_]} @int) if @int;
-                $checked{join "", sort $i_n, $j_n, $k_n} = 1;
+    while(1){
+        return if $self->positions->size == scalar %done ;
+        # Start working immediately in case a file is loaded
+        my $i_n = (scalar %done ? 0 : $self->positions->size-1);
+        while ($i_n < $self->positions->size) {
+            next if $done{$i_n};
+            carp "Out of space" and return
+                if volume( $self->grain_radius ) * ( $self->positions->size + 1 ) > volume( $self->radius );
+            # Don't bother checking lower indicies
+            my $i = $self->positions->at($i_n);
+            my $changed = 0;
+            my @nearest;
+            my $next_nearest = sub {$self->positions->find_nearest_neighbor(
+                $self->positions->at($i_n),
+                4*$self->grain_radius,
+                {$i_n=>1, map {($_=>1)} @nearest}
+            )};
+            #say "Possibilities: ", join ", ", @nearest;
+            while ((my $j_n = $next_nearest->())) {
+                my $j = $self->positions->at($j_n);
+                for my $k_n (@nearest){
+                    my $k = $self->positions->at($k_n);
+                    next if $checked{join "", sort $i_n, $j_n, $k_n};
+                    # Doesn't try to put anything in that isn't perfectly 'snug'
+                    my @int = grep {defined} $self->sphere_intersection({
+                        centers => [$i, $j, $k],
+                        radius  => 2*$self->grain_radius
+                    });
+                    #say "Trying: $i_n, $j_n, $k_n -- ", join " - ", @int;
+                    $changed += scalar @{[$self->insert(map {[$_]} @int)]} if @int;
+                    $checked{join "", sort $i_n, $j_n, $k_n} = 1;
+                }
+                push @nearest, $j_n;
             }
-            push @nearest, $j_n;
-        }
-        if (!$changed) {
-            $done{$i_n} = 1;
+            if (!$changed) {
+                $done{$i_n} = 1;
+                say STDERR "$i_n done"
+            }
+            $i_n++;
         }
     }
-    $self->fill_dense(\%checked,\%done)
+#    $self->fill_dense(\%checked,\%done)
 }
 
 sub sphere_intersection {
